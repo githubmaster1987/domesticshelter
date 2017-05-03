@@ -259,8 +259,8 @@ def start_selenium():
 	luminati_proxy_port = 22225
 
 	for ind, url in enumerate(url_lists):
-		if ind == 1:
-			break
+		logger.info("Index-------------------- -> {}".format(ind))
+
 		proxy_ip = random_luminati_proxy()
 		proxy_str = "{}:{}".format(luminati_proxy_host, luminati_proxy_port)
 		auth_str = "{}-ip-{}".format(luminati_zone_proxy_username, proxy_ip, )
@@ -309,7 +309,8 @@ def start_selenium():
 					href = div.x("h2/a/@href").strip()
 					item = [
 						"url", href,
-						"parent", url
+						"parent", url.replace("&page=1", ""),
+						"ind", ind
 					]
 					s.save(item, list_file)
 					logger.info(href)
@@ -321,9 +322,10 @@ def start_selenium():
 				sleep(random.randrange(DRIVER_MEDIUM_WAITING_SECONDS))
 			except:
 				break
-
+		
 		driver.quit()
 
+		
 if __name__ == '__main__':
 	
 	#get_city_info()
