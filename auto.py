@@ -11,6 +11,12 @@ from scrapex import common
 from scrapex.node import Node
 from scrapex.excellib import *
 import random
+from time import sleep
+import sys
+import json
+import csv
+import random
+from proxy_list import random_luminati_proxy
 from selenium import webdriver
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium.webdriver.firefox.firefox_binary import FirefoxBinary
@@ -23,10 +29,7 @@ from selenium.common.exceptions import ElementNotVisibleException
 from time import sleep
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver import ActionChains
-import sys
-import csv
-import random
-from proxy_list import random_luminati_proxy
+
 
 s = Scraper(
 	use_cache=False, #enable cache globally
@@ -37,36 +40,19 @@ s = Scraper(
 	proxy_auth= 'silicons:1pRnQcg87F'
 	)
 
+logger = s.logger
+
+city_file = "city.csv"
+geo_file = "city_geo.csv"
+list_file = "list.csv"
+
+start_url = "https://www.domesticshelters.org/"
+city_url = "http://www.craigslist.org/about/sites#US"
+item_list_file = "list.csv"
+
 DRIVER_WAITING_SECONDS = 60
 DRIVER_MEDIUM_WAITING_SECONDS = 10
 DRIVER_SHORT_WAITING_SECONDS = 3
-
-logger = s.logger
-
-url_file = "urls.csv"
-
-group_urls = [
-	'https://www.youtube.com/user/CommercialAppraisers/videos',
-	'https://www.youtube.com/user/PacificAppraisers/videos',
-	'https://www.youtube.com/user/njpropertyappraiser/videos',
-	'https://www.youtube.com/user/IRRSanDiegoAppraiser/videos',
-	'https://www.youtube.com/channel/UCRQkRpHyP7VbFp2-eX1mK2Q',
-	'https://www.youtube.com/channel/UCwGnRooW-wA_U-pFeQOsPYA',
-]
-
-individual_urls = [
-	'https://www.youtube.com/watch?v=IrQk_oL7nnM&list=WL&index=157',
-	'https://www.youtube.com/watch?v=MP4viH08Hl0',
-	'https://www.youtube.com/watch?v=cJDXNoSIS6s',
-	'https://www.youtube.com/watch?v=wqNnb1SZOho',
-	'https://www.youtube.com/watch?v=KPXaqJvQadk',
-	'https://www.youtube.com/watch?v=07zwWGF3XA8',
-	'https://www.youtube.com/watch?v=qIPPKofrhdU&t=3s',
-	'https://www.youtube.com/watch?v=1v6NeSuPtoY',
-	'https://www.youtube.com/watch?v=zAzyx8K1oYk&t=4s',
-	'https://www.youtube.com/watch?v=ZgRUPJpOxlU',
-	'https://www.youtube.com/watch?v=valWBwj62uo',
-]
 
 class AnyEc:
 	""" Use with WebDriverWait to combine expected_conditions
@@ -82,8 +68,63 @@ class AnyEc:
 				pass
 
 
+def get_geolocation():
+	with open(city_file) as csvfile:
+		reader = csv.reader(csvfile)
+		for i, item in enumerate(reader):
+			if i > 0:
+				city_str = item[0]
+
+				json_obj = s.load_json("https://maps.googleapis.com/maps/api/geocode/json?address={}&key=AIzaSyBBJbYJoYNH3edgpio4MSliiMWgTxu4yjs".format(city_str))
+				lat = ""
+				lng = ""
+
+				try:
+					lat = json_obj["results"][0]["geometry"]["location"]["lat"]
+					lng = json_obj["results"][0]["geometry"]["location"]["lng"]
+					print city_str, json_obj["results"][0]["geometry"]["location"]
+				except:
+					lat = ""
+					lng = ""
+
+				item = [
+					"city", city_str,
+					"latitude", lat,
+					"longitude", lng,
+				]	
+				s.save(item, geo_file)
+	
+
+def get_city_info():
+	html = s.load(city_url, use_cache = False)
+	
+	proxy = html.response.request.get("proxy")
+	logger.info(proxy.host + ":" + str(proxy.port))
+
+	city_divs = html.q("//div[@class='colmask']/div/ul/li/a")
+	logger.info(len(city_divs))
+
+	for city in city_divs:
+		city_str = city.x("text()").strip()
+
+		item = [
+			"city", city_str,
+		]	
+		s.save(item, city_file)
+	return
+
 def get_start_urls():
-	url_lists = []
+	with open(city_file) as csvfile:
+		reader = csv.reader(csvfile)
+		for i, item in enumerate(reader):
+			if i > 0:
+				url = start_url + "search#?q={}&latitude={}&longitude={}&radius=50"
+				html = s.load_html(url, use_cache = False)
+				
+				with open("response.html", 'w') as f:
+					f.write(html.encode('utf-8'))
+
+				return
 	for url in group_urls:
 		logger.info('loading parent page...' + url)
 		html = s.load(url, use_cache = False)
@@ -204,17 +245,12 @@ def create_proxyauth_extension(proxy_host, proxy_port,
 
 def start_selenium():
 	url_lists = []
-	with open(url_file) as csvfile:
+	with open(geo_file) as csvfile:
 		reader = csv.reader(csvfile)
-		print ( "-----------------CSV Read------------------" )
-		i = 0
-		for input_item in reader:
+		for i, item in enumerate(reader):
 			if i > 0:
-				url = {}
-				url["url"] = input_item[0]
-				url["group_url"] = input_item[1]
+				url = start_url + "search#?q={}&latitude={}&longitude={}&radius=50&page=1".format(item[0], item[1], item[2])
 				url_lists.append(url)
-			i+=1
 
 	luminati_zone_proxy_username = "lum-customer-hl_1dafde3b-zone-zone1"
 	luminati_zone_proxy_pwd = "n9ndhce734x9"
@@ -222,82 +258,75 @@ def start_selenium():
 	luminati_proxy_host = "zproxy.luminati.io"
 	luminati_proxy_port = 22225
 
-	#for url in url_lists:
-	url = random.choice(url_lists)
-	proxy_ip = random_luminati_proxy()
-	proxy_str = "{}:{}".format(luminati_proxy_host, luminati_proxy_port)
-	auth_str = "{}-ip-{}".format(luminati_zone_proxy_username, proxy_ip, )
-	
-	proxyauth_plugin_path = create_proxyauth_extension(
-			proxy_host=luminati_proxy_host,
-			proxy_port=luminati_proxy_port,
-			proxy_username=auth_str,
-			proxy_password=luminati_zone_proxy_pwd
-		)
+	for ind, url in enumerate(url_lists):
+		if ind == 1:
+			break
+		proxy_ip = random_luminati_proxy()
+		proxy_str = "{}:{}".format(luminati_proxy_host, luminati_proxy_port)
+		auth_str = "{}-ip-{}".format(luminati_zone_proxy_username, proxy_ip, )
+		
+		proxyauth_plugin_path = create_proxyauth_extension(
+				proxy_host=luminati_proxy_host,
+				proxy_port=luminati_proxy_port,
+				proxy_username=auth_str,
+				proxy_password=luminati_zone_proxy_pwd
+			)
 
-	co = Options()
-	co.add_argument("--start-maximized")
-	#co.add_extension(proxyauth_plugin_path)
-	driver = webdriver.Chrome(chrome_options=co)
-	
-	driver.get(url["url"])
-	sleep(random.randrange(DRIVER_WAITING_SECONDS))
+		co = Options()
+		co.add_argument("--start-maximized")
+		co.add_extension(proxyauth_plugin_path)
+		driver = webdriver.Chrome(chrome_options=co)
 
-	more_span = WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(EC.element_to_be_clickable((By.XPATH, "//div[@class='yt-uix-menu ']/button[contains(@class, 'yt-uix-tooltip')]")))
+		sleep(random.randrange(DRIVER_MEDIUM_WAITING_SECONDS))
+		driver.get(url)
+		logger.info(url)
+		while(1):
+			try:
+				sleep(random.randrange(DRIVER_MEDIUM_WAITING_SECONDS))
+				logger.info("Wait page loading")
+				pagination_container = WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(AnyEc
+					(
+						EC.presence_of_element_located(
+							(By.XPATH, "//div[@id='box1 d-pad-30']")
+						),
+						EC.presence_of_element_located(
+							(By.XPATH, "//div[@class='unable-to-find']")
+						),
+					)
+				)
 
-	logger.info("Page is loading->")
-	more_span = WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(EC.presence_of_element_located((By.XPATH, "html")))
-	sleep(random.randrange(DRIVER_SHORT_WAITING_SECONDS))
-	logger.info("Wait More->")
-	WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(EC.presence_of_element_located((By.XPATH, "//div[@class='yt-uix-menu ']/button[contains(@class, 'yt-uix-tooltip')]")))
-	sleep(random.randrange(DRIVER_SHORT_WAITING_SECONDS))
-	
-	retry_flg = True
-	while(retry_flg == True):
-		try:	
-			more_span = driver.find_element_by_xpath("//div[@class='yt-uix-menu ']/button[contains(@class, 'yt-uix-tooltip')]")
-			logger.info("Found More->")
-			more_span.click()
-			logger.info("More Clicked->")
-			sleep(random.randrange(DRIVER_SHORT_WAITING_SECONDS))
+				logger.info("Page is loaded")
 
+				try:
+					unabel_find = driver.find_element_by_xpath("//div[@class='unable-to-find']")
+				except Exception as e:
+					logger.info(e)
 
-			logger.info("Wait Transcript->")
-			transcript = WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(EC.presence_of_element_located((By.XPATH, "//li/button[contains(@class, 'action-panel-trigger-transcript')]")))
-			logger.info("Found Transcript->")
-			sleep(random.randrange(DRIVER_SHORT_WAITING_SECONDS))
+				doc = Doc(html=driver.page_source)
+				divs = doc.q("//li[@class='box1 d-pad-30']")
+				logger.info(len(divs))
+				for div in divs:
+					href = div.x("h2/a/@href").strip()
+					item = [
+						"url", href,
+						"parent", url
+					]
+					s.save(item, list_file)
+					logger.info(href)
 
-			transcript.click()
-			logger.info("Transcript Clicked->")
-			sleep(random.randrange(DRIVER_SHORT_WAITING_SECONDS))
+				logger.info ("Next Button")
+				next_button = driver.find_element_by_xpath('//a[@class="next_page"]')
+				driver.execute_script('window.scrollTo(0, ' + str(next_button.location['y']) + ');')
+				next_button.click()
+				sleep(random.randrange(DRIVER_MEDIUM_WAITING_SECONDS))
+			except:
+				break
 
-			logger.info("Transcript Queue Waiting->")
-			transcript = WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(EC.presence_of_element_located((By.XPATH, "//div[@class='caption-line']")))
-			logger.info("Transcript Queue Founded->")
-			sleep(random.randrange(DRIVER_MEDIUM_WAITING_SECONDS))
-
-			logger.info("Transcript Wait->")
-			transcript = WebDriverWait(driver, DRIVER_WAITING_SECONDS).until(EC.element_to_be_clickable((By.XPATH, "//div[@class='caption-line']")))
-			logger.info("Transcript Load->")
-			sleep(random.randrange(DRIVER_MEDIUM_WAITING_SECONDS))
-
-			doc = Doc(html= driver.page_source)
-			divs = doc.q("div[contains(@class,'caption-line')]")	
-			logger.info(len(divs))
-			retry_flg =  False
-
-		except ElementNotVisibleException as e:
-			logger.info(e)
-			retry_flg = True
-
-	for div in divs:
-		time_str = div.x("div[@class='caption-line-time']/text()").strip()
-		text_str = div.x("div[@class='caption-line-text']/text()").strip()
-		logger.info("{}, {}".format(time_str, text_str))
-	#driver.quit()
-	sleep(random.randrange(DRIVER_WAITING_SECONDS))
-	return
+		driver.quit()
 
 if __name__ == '__main__':
+	
+	#get_city_info()
+	#get_geolocation()
 	#get_start_urls()
 	start_selenium()
