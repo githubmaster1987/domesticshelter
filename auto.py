@@ -29,6 +29,9 @@ from selenium.common.exceptions import ElementNotVisibleException
 from time import sleep
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver import ActionChains
+import threading
+
+lock = threading.Lock()
 
 
 s = Scraper(
@@ -45,8 +48,9 @@ logger = s.logger
 city_file = "city.csv"
 geo_file = "city_geo.csv"
 list_file = "list.csv"
+detail_file = "result.csv"
 
-start_url = "https://www.domesticshelters.org/"
+start_url = "https://www.domesticshelters.org"
 city_url = "http://www.craigslist.org/about/sites#US"
 item_list_file = "list.csv"
 
@@ -118,7 +122,7 @@ def get_start_urls():
 		reader = csv.reader(csvfile)
 		for i, item in enumerate(reader):
 			if i > 0:
-				url = start_url + "search#?q={}&latitude={}&longitude={}&radius=50"
+				url = start_url + "/search#?q={}&latitude={}&longitude={}&radius=50"
 				html = s.load_html(url, use_cache = False)
 				
 				with open("response.html", 'w') as f:
@@ -209,7 +213,7 @@ def create_proxyauth_extension(proxy_host, proxy_port,
 				port: parseInt(${port})
 			  },
 			  bypassList: ["foobar.com"]
-			}
+			}f
 		  };
 
 	chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
@@ -249,7 +253,7 @@ def start_selenium():
 		reader = csv.reader(csvfile)
 		for i, item in enumerate(reader):
 			if i > 0:
-				url = start_url + "search#?q={}&latitude={}&longitude={}&radius=50&page=1".format(item[0], item[1], item[2])
+				url = start_url + "/search#?q={}&latitude={}&longitude={}&radius=50&page=1".format(item[0], item[1], item[2])
 				url_lists.append(url)
 
 	luminati_zone_proxy_username = "lum-customer-hl_1dafde3b-zone-zone1"
@@ -327,10 +331,157 @@ def start_selenium():
 		
 		driver.quit()
 
-		
+def parse_span_by_xpath(xpath, html):
+	lists = []
+	path_div = html.q(xpath)
+	if len(path_div) > 0:
+		for row in path_div:
+			t_str = row.x("text()").strip()
+			if t_str != "":
+				lists.append(t_str)
+
+	return ",".join(lists)
+
+def parse_services(xpath, html):
+	services_div = html.q(xpath)
+	service_list = []
+	for row in services_div:
+		title = row.x("h3/text()").strip()
+		services = []
+
+		for sub_row in row.q("ul/li"):
+			services.append(str(sub_row.x("text()").strip()))
+
+		t_str = title + ":" + str(services)
+		service_list.append(t_str)
+	
+	return "\r\n".join(service_list)
+
+def start_detail_scraping(threads_number):
+	item_list = []
+	with open(list_file) as csvfile:
+		reader = csv.reader(csvfile)
+		for i, list_item in enumerate(reader):
+			if i > 0:
+				item_list.append(list_item)
+
+	threads = []
+	while 1:
+		while len(item_list) > 0:
+			if len(threads) < threads_number:
+				list_item = item_list.pop(0)
+
+				thread_obj = threading.Thread(target=parse_detail_content,
+											  args=(list_item,))
+				threads.append(thread_obj)
+				thread_obj.start()
+
+			for thread in threads:
+				if not thread.is_alive():
+					thread.join()
+					threads.remove(thread)
+					print "Remain URL -> {0}".format(len(item_list))
+
+		if len(item_list) == 0:
+			break
+				
+def parse_detail_content(list_item):
+	url = start_url + list_item[0]
+	search_url = list_item[1]
+
+	logger.info(url)
+	html = s.load(url, use_cache = False)
+	
+	proxy = html.response.request.get("proxy")				
+	logger.info(proxy.host + ":" + str(proxy.port))
+
+	item = {}
+	item["hotline"] = parse_span_by_xpath("//li[contains(@class,'hotline')]//span", html)
+	item["tollfree"] = parse_span_by_xpath("//li[contains(@class,'tollfree')]//span", html)
+	item["busphone"] = parse_span_by_xpath("//li[contains(@class,'bus-phone')]//span", html)
+	item["language"] = parse_span_by_xpath("//li[contains(@class,'language')]//span", html)
+	item["fax"] = parse_span_by_xpath("//li[contains(@class,'fax')]//span", html)
+	item["tty"] = parse_span_by_xpath("//li[contains(@class,'TTY')]//span", html)
+
+	hours = []
+	hours_div = html.q("//li[contains(@class, 'hours-op')]//tr")
+	if len(hours_div) > 0:
+		for row in hours_div:
+			tds = row.q("td")
+			
+			days = []
+			for sub_row in tds:
+				t_str = sub_row.x("text()").strip()
+				days.append(t_str)
+
+			if len(days) > 0:
+				hours.append(",".join(days))
+
+	item["hours"] = hours
+
+	category_div = html.q("//div[@class='bread']/a[contains(@href,'search')]")
+	category = []
+
+	item_ind = -1
+	for ind, row in enumerate(category_div):
+		category.append(row.x("text()").strip())
+
+	item["category"] = "/".join(category)
+
+	header_div = html.q("//div[contains(@class,'location-head')]/h1")
+
+	if len(header_div) > 0:
+		item["title"] = header_div[0].x("text()").strip()
+	else:
+		item["title"] = ""
+
+	item["website"] = parse_span_by_xpath("//li[@class='']/h3[contains(text(), 'Website')]/../span/a", html)
+	item["beds"] = parse_span_by_xpath("//li[@class='']/h3[contains(text(), 'Beds')]/../span", html)
+	item["wheelchair"] = parse_span_by_xpath("//li[@class='']/h3[contains(text(), 'Wheelchair')]/../span", html)
+	item["established"] = parse_span_by_xpath("//li[@class='']/h3[contains(text(), 'Established')]/../span", html)
+	item["maxmum_length"] = parse_span_by_xpath("//h3[contains(text(), 'Maximum Length of Stay')]/../span", html)
+	item["pet_shelter"] = parse_span_by_xpath("//li[@class='']/h3[contains(text(), 'Pet Shelter')]/../span", html)
+	item["description"] = parse_span_by_xpath("//div[contains(@class,'description')]/p", html)
+
+	item["service_list"] = parse_services("//div[contains(@id, 'services')]//div[@class='js-accordion']", html)
+	item["popup_service_list"] = parse_services("//div[contains(@class, 'pop-serve')]//div[@class='js-accordion']",html)
+
+	item["counties_serve"] = html.q("//ul[@class='counties-served']/li/text()").join(" ")
+
+	write_content(s, item, url, search_url)
+
+def write_content(s, item, url, search_url):
+	lock.acquire()
+
+	content = [
+		"Title", item["title"],
+		"Category", item["category"],
+		"Hotline", item["hotline"],
+		"Toll Free", item["tollfree"],
+		"Business", item["busphone"],
+		"Language Spoken", item["language"],
+		"TTY/TTD", item["tty"],
+		"Fax", item["fax"],
+		"Hours", "\r\n".join(item["hours"]),
+		"Services", item["service_list"],
+		"Populations Served", item["popup_service_list"],
+		"Counties Served", item["counties_serve"],
+		"Website", item["website"],
+		"Wheelchair Accessible", item["wheelchair"],
+		"Established", item["established"],
+		"Maximum Length of Stay (days)", item["maxmum_length"],
+		"Pet Shelter", item["pet_shelter"],
+		"Description", item["description"],
+		"Url", url,
+		"Search Url", search_url,
+	]
+	s.save(content, detail_file)
+	lock.release()
+
 if __name__ == '__main__':
 	
 	#get_city_info()
 	#get_geolocation()
 	#get_start_urls()
-	start_selenium()
+	#start_selenium()
+	start_detail_scraping(10)
